@@ -1,8 +1,10 @@
 import os
+import traceback
 import discord
 import requests
 from dotenv import load_dotenv
 from datetime import datetime
+import sys
 # ─────────────────────────────────────────────
 #  CONFIG — fill these in or use env vars
 # ─────────────────────────────────────────────
@@ -15,12 +17,13 @@ GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 MAX_HISTORY   = 10   # messages kept per channel (pairs: user + assistant)
  
 SYSTEM_PROMPT = (
-    "You are a concise, professional assistant in a Discord server. "
-    "Reply with the minimum words needed. "
-    "No fluff, no emojis, no long paragraphs. "
-    "Format code blocks with proper markdown (```language ... ```)."
+    "You are a witty, sarcastic-but-helpful assistant living inside a Discord server. "
+    "Your answers must always be factually correct and complete — accuracy is non-negotiable. "
+    "BUT your delivery should be funny: use dry humor, light roasts, or absurd analogies. "
+    "Keep replies short (2-5 sentences max). Never sacrifice correctness for a joke. "
+    "No emoji spam. No cringe. Think 'brilliant friend who can't resist a quip'. "
+    "Format any code in proper markdown code blocks (```language ... ```)."
 )
- 
 # ─────────────────────────────────────────────
 #  PER-CHANNEL CONVERSATION HISTORY
 # ─────────────────────────────────────────────
@@ -50,7 +53,9 @@ def clear_history(channel_id: int):
 def ask_ai(channel_id: int, prompt: str) -> str:
     """Send prompt + history to Groq, return reply or fallback."""
     add_to_history(channel_id, "user", prompt)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + get_history(channel_id)
+    now = datetime.now().strftime("%A, %B %d %Y, %I:%M %p")
+    system_with_time = SYSTEM_PROMPT + f" The current date and time is: {now}."
+    messages = [{"role": "system", "content": system_with_time}] + get_history(channel_id)
  
     print(f"[AI] Calling Groq | channel={channel_id} | prompt={prompt!r}")
     try:
@@ -108,7 +113,8 @@ tree = discord.app_commands.CommandTree(bot)
 @tree.command(name="clear", description="Clear this channel's conversation history with the bot.")
 async def clear_cmd(interaction: discord.Interaction):
     clear_history(interaction.channel_id)
-    await interaction.response.send_message("Conversation history cleared.", ephemeral=True)
+    await interaction.response.send_message("Done — history cleared (only you see this).", ephemeral=True)
+    await interaction.channel.send("Memory wiped. I now know absolutely nothing about you. Fresh start.")
  
  
 @tree.command(name="history", description="Show how many messages are in the current context.")
@@ -139,13 +145,27 @@ async def on_ready():
 @bot.event
 async def on_message(message: discord.Message):
     timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] #{message.channel} | {message.author}: {message.content!r}")
  
-    # 1. Ignore bots
+    # 1. Ignore non-standard message types (slash command ephemeral results,
+    #    thread starters, pins, etc.) — they have no usable .content
+    if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+        return
+ 
+    # 2. Ignore bots (prevents infinite loops)
     if message.author.bot:
         return
  
-    # 2. Only respond when mentioned
+    # 3. Guard: .content can be empty string on some gateway events
+    if not message.content:
+        return
+ 
+    print(f"[{timestamp}] #{message.channel} | {message.author}: {message.content!r}")
+ 
+    # 4. Passively store every human message so context is preserved
+    #    even when the user does not mention the bot (e.g. "my name is sam")
+    add_to_history(message.channel.id, "user", f"{message.author.display_name}: {message.content}")
+ 
+    # 5. Only respond when mentioned
     if bot.user not in message.mentions:
         return
  
@@ -160,7 +180,7 @@ async def on_message(message: discord.Message):
     # 4. Handle special text commands (mention-based)
     if prompt.lower() in ("!clear", "clear", "reset"):
         clear_history(message.channel.id)
-        await message.reply("Conversation history cleared.")
+        await message.reply("Memory wiped. I now know absolutely nothing about you. Fresh start.")
         return
  
     if prompt.lower() in ("!help", "help", "?"):
@@ -198,7 +218,12 @@ async def on_message(message: discord.Message):
  
 @bot.event
 async def on_error(event: str, *args, **kwargs):
-    print(f"[ERROR] Unhandled error in event '{event}': {args}")
+    # sys.exc_info() captures the live exception; print_exception() shows
+    # the full stack trace so you can see exactly what failed and where
+    exc_type, exc_value, exc_tb = sys.exc_info()
+    print(f"[ERROR] Exception in event '{event}' — full traceback:")
+    traceback.print_exception(exc_type, exc_value, exc_tb)
+    print(f"[ERROR] Event args: {args}")
  
  
 # ─────────────────────────────────────────────
@@ -212,4 +237,3 @@ if __name__ == "__main__":
         print("[FATAL] Set GROQ_API_KEY before running.")
         exit(1)
     bot.run(DISCORD_TOKEN)
- 
